@@ -17,8 +17,12 @@ repositories {
 
 dependencies {
   implementation 'org.springframework.boot:spring-boot-starter'
-  
+  implementation 'io.r2dbc:r2dbc-pool'
+  implementation 'io.r2dbc:r2dbc-spi'
+  implementation 'ch.qos.logback:logback-classic'
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  testImplementation 'io.projectreactor:reactor-test'
+  testImplementation 'io.r2dbc:r2dbc-spi-test:1.0.0.RELEASE'
 }
 
 tasks.named('test') {

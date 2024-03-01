@@ -23,7 +23,6 @@ import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
 import io.r2dbc.spi.test.MockConnection;
 import io.r2dbc.spi.test.MockConnectionFactory;
-import io.r2dbc.spi.test.MockResult;
 import io.r2dbc.spi.test.MockRow;
 import io.r2dbc.spi.test.MockStatement;
 import org.junit.jupiter.api.Test;
@@ -48,16 +47,43 @@ public class RacingQueriesTest {
 		CountDownLatch badLatch = new CountDownLatch(1);
 
 		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
-		
+
 		RaceTestUtils.race(
-				() -> goodActor(pooledConnectionFactory, goodLatch).subscribe(),
-				() -> badActor(pooledConnectionFactory, badLatch).subscribe());
-//				() -> goodActor(pooledConnectionFactory, badLatch).subscribe());
+				() -> goodActorSimple(pooledConnectionFactory, goodLatch).subscribe(),
+				() -> badActorSimple(pooledConnectionFactory, badLatch).subscribe());
+//				() -> goodActorSimple(pooledConnectionFactory, badLatch).subscribe());
 
 		goodLatch.await();
 		badLatch.await();
 
+//		RaceTestUtils.race(
+//				() -> goodActor(pooledConnectionFactory, goodLatch).subscribe(),
+//				() -> badActor(pooledConnectionFactory, badLatch).subscribe());
+////				() -> goodActor(pooledConnectionFactory, badLatch).subscribe());
+//
+//		goodLatch.await();
+//		badLatch.await();
+
 		System.out.println("Done");
+	}
+
+	private Mono<Void> badActorSimple(ConnectionPool pool, CountDownLatch latch) {
+		return goodActorSimple(pool, latch).zipWith(
+				                             Mono.error(RuntimeException::new).delaySubscription(Duration.ofMillis(50)))
+		                             .onErrorComplete()
+		                             .map(Tuple2::getT1)
+		                             .doOnNext(count -> latch.countDown());
+	}
+
+	private Mono<Void> goodActorSimple(ConnectionPool pool, CountDownLatch latch) {
+		return pool.create()
+		           .flatMap(con -> Mono.from(con.createStatement("SELECT 1")
+		                                        .execute())
+		                               .flatMap(result -> Mono.from(result.getRowsUpdated()))
+		                               .doOnNext(count -> latch.countDown())
+		                               .then(Mono.from(con.close()))
+		                               .doOnCancel(() -> Mono.from(con.close()).doFinally(s -> latch.countDown()).subscribe())
+		    );
 	}
 
 	private Mono<Long> goodActor(ConnectionPool pool, CountDownLatch latch) {

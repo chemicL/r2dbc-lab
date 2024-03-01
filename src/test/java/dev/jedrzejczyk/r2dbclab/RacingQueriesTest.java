@@ -40,6 +40,7 @@ public class RacingQueriesTest {
 
 	private static final Logger logger = LoggerFactory.getLogger(RacingQueriesTest.class);
 
+	// this one is ok
 	@Test
 	void testRace() throws InterruptedException {
 		logger.info("Started");
@@ -49,57 +50,210 @@ public class RacingQueriesTest {
 		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
 
 		RaceTestUtils.race(
-				() -> goodActorSimple(pooledConnectionFactory, goodLatch).subscribe(),
-				() -> badActorSimple(pooledConnectionFactory, badLatch).subscribe());
-//				() -> goodActorSimple(pooledConnectionFactory, badLatch).subscribe());
+				() -> goodActor(pooledConnectionFactory, goodLatch).subscribe(),
+				() -> badActor(pooledConnectionFactory, badLatch).subscribe()
+		);
 
 		goodLatch.await();
 		badLatch.await();
 
-//		RaceTestUtils.race(
-//				() -> goodActor(pooledConnectionFactory, goodLatch).subscribe(),
-//				() -> badActor(pooledConnectionFactory, badLatch).subscribe());
-////				() -> goodActor(pooledConnectionFactory, badLatch).subscribe());
-//
-//		goodLatch.await();
-//		badLatch.await();
+		logger.info("Done");
+	}
 
-		System.out.println("Done");
+	// this one is also ok
+	@Test
+	void testRaceLoop() throws InterruptedException {
+		logger.info("Started");
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		for (int i = 0; i < 100; i++) {
+			logger.info("Iteration: {}", i);
+			CountDownLatch goodLatch = new CountDownLatch(1);
+			CountDownLatch badLatch = new CountDownLatch(1);
+
+			RaceTestUtils.race(
+					() -> goodActor(pooledConnectionFactory, goodLatch).subscribe(),
+					() -> badActor(pooledConnectionFactory, badLatch).subscribe()
+			);
+
+			goodLatch.await();
+			badLatch.await();
+		}
+
+		logger.info("Done");
+	}
+
+	// this one is ok
+	@Test
+	void testRaceSimple() throws InterruptedException {
+		logger.info("Started");
+		CountDownLatch goodLatch = new CountDownLatch(1);
+		CountDownLatch badLatch = new CountDownLatch(1);
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		RaceTestUtils.race(
+				() -> goodActorSimple(pooledConnectionFactory, goodLatch).subscribe(),
+				() -> badActorSimple(pooledConnectionFactory, badLatch).subscribe()
+		);
+
+		goodLatch.await();
+		badLatch.await();
+
+		logger.info("Done");
+	}
+
+	// this one is also ok
+	@Test
+	void testRaceSimpleLoop() throws InterruptedException {
+		logger.info("Started");
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		for (int i = 0; i < 100; i++) {
+			logger.info("Iteration: {}", i);
+
+			CountDownLatch goodLatch = new CountDownLatch(1);
+			CountDownLatch badLatch = new CountDownLatch(1);
+
+			RaceTestUtils.race(
+					() -> goodActorSimple(pooledConnectionFactory, goodLatch).subscribe(),
+					() -> badActorSimple(pooledConnectionFactory, badLatch).subscribe()
+			);
+
+			goodLatch.await();
+			badLatch.await();
+		}
+
+		logger.info("Done");
+	}
+
+	@Test
+	void testGoodActor() throws InterruptedException {
+		logger.info("Started");
+		CountDownLatch latch = new CountDownLatch(1);
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		goodActor(pooledConnectionFactory, latch).block();
+
+		latch.await();
+
+		logger.info("Done");
+	}
+
+	@Test
+	void testBadActor() throws InterruptedException {
+		logger.info("Started");
+		CountDownLatch latch = new CountDownLatch(1);
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		badActor(pooledConnectionFactory, latch).block();
+
+		latch.await();
+
+		logger.info("Done");
+	}
+
+	@Test
+	void testGoodActorsRace() throws InterruptedException {
+		logger.info("Started");
+		CountDownLatch latch1 = new CountDownLatch(1);
+		CountDownLatch latch2 = new CountDownLatch(1);
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		RaceTestUtils.race(
+				() -> goodActor(pooledConnectionFactory, latch1).subscribe(),
+				() -> goodActor(pooledConnectionFactory, latch2).subscribe());
+
+		latch1.await();
+		latch2.await();
+
+		logger.info("Done");
+	}
+
+	@Test
+	void testGoodActorsSimpleRace() throws InterruptedException {
+		logger.info("Started");
+		CountDownLatch latch = new CountDownLatch(2);
+
+		ConnectionPool pooledConnectionFactory = connectionPool(slowConnectionFactory());
+
+		RaceTestUtils.race(
+				() -> goodActorSimple(pooledConnectionFactory, latch).subscribe(),
+				() -> goodActorSimple(pooledConnectionFactory, latch).subscribe());
+
+		latch.await();
+
+		logger.info("Done");
 	}
 
 	private Mono<Void> badActorSimple(ConnectionPool pool, CountDownLatch latch) {
-		return goodActorSimple(pool, latch).zipWith(
-				                             Mono.error(RuntimeException::new).delaySubscription(Duration.ofMillis(50)))
-		                             .onErrorComplete()
-		                             .map(Tuple2::getT1)
-		                             .doOnNext(count -> latch.countDown());
+		return actorSimple(pool, latch, true)
+				.zipWith(Mono.error(RuntimeException::new).delaySubscription(Duration.ofMillis(50)))
+				.onErrorComplete()
+				.map(Tuple2::getT1)
+				.doFinally(s -> latch.countDown());
 	}
 
 	private Mono<Void> goodActorSimple(ConnectionPool pool, CountDownLatch latch) {
+		return actorSimple(pool, latch, false);
+	}
+
+	private Mono<Void> actorSimple(ConnectionPool pool, CountDownLatch latch, boolean expectCancel) {
 		return pool.create()
-		           .flatMap(con -> Mono.from(con.createStatement("SELECT 1")
-		                                        .execute())
-		                               .flatMap(result -> Mono.from(result.getRowsUpdated()))
-		                               .doOnNext(count -> latch.countDown())
-		                               .then(Mono.from(con.close()))
-		                               .doOnCancel(() -> Mono.from(con.close()).doFinally(s -> latch.countDown()).subscribe())
-		    );
+		           .flatMap(con ->
+				           Mono.from(con.createStatement("SELECT 1").execute())
+				               .flatMap(result -> Mono.from(result.getRowsUpdated()))
+				               .doOnNext(count -> latch.countDown())
+				               .doOnCancel(() -> {
+								   if (expectCancel) {
+									   logger.info("Cancelled actor, releasing connection");
+									   Mono.from(con.close()).doFinally(s -> latch.countDown()).subscribe();
+								   } else {
+									   logger.error("Cancelled actor, but not expected," +
+											   " not releasing connection");
+								   }
+				               })
+				               .then(Mono.from(con.close()))
+		);
 	}
 
 	private Mono<Long> goodActor(ConnectionPool pool, CountDownLatch latch) {
-		return Mono.usingWhen(pool.create(),
-				           con -> Mono.from(con.createStatement("SELECT 1").execute()),
-				           Connection::close)
-		           .flatMap(result -> Mono.from(result.getRowsUpdated()))
-				.doOnNext(count -> latch.countDown());
+		return actor(pool, latch, false);
+	}
+
+	private Mono<Long> actor(ConnectionPool pool, CountDownLatch latch, boolean expectCancel) {
+		return Mono.usingWhen(
+				pool.create()
+				    // we need to countDown because it might be that connection is not
+				    // yet delivered
+				    .doOnCancel(() -> {
+						if (expectCancel) {
+							latch.countDown();
+						}
+				    }),
+				con -> Mono.from(con.createStatement("SELECT 1").execute()),
+				con -> Mono.from(con.close())
+				           // we need to do this to ensure that once we clean up, the
+				           // latch is released
+				           .doFinally(s -> {
+							   if (expectCancel) {
+								   latch.countDown();
+							   }
+				           })
+		).flatMap(result -> Mono.from(result.getRowsUpdated()))
+				.doFinally(s -> latch.countDown());
 	}
 
 	private Mono<Long> badActor(ConnectionPool pool, CountDownLatch latch) {
-		return goodActor(pool, latch).zipWith(
-				Mono.error(RuntimeException::new).delaySubscription(Duration.ofMillis(50)))
-		                             .onErrorComplete()
-		                             .map(Tuple2::getT1)
-		                             .doOnNext(count -> latch.countDown());
+		return actor(pool, latch, true)
+				.zipWith(Mono.error(RuntimeException::new).delaySubscription(Duration.ofMillis(50)))
+				.onErrorComplete()
+				.map(Tuple2::getT1)
+				.doFinally(s -> latch.countDown());
 	}
 
 	private ConnectionFactory slowConnectionFactory() {
@@ -111,13 +265,15 @@ public class RacingQueriesTest {
 						                      random.nextInt()).build());
 		Stream<Result.Segment> segments =
 				Stream.concat(Stream.<Result.Segment>generate(supplier)
-				                    .limit(10), Stream.of(MockResult.updateCount(100)));
+				                    .limit(100), Stream.of(MockResult.updateCount(100)));
 
 		List<Result.Segment> segmentsList = segments.toList();
 
 		Flux<Result.Segment> segmentsFlux =
+				// swap for an instant response
+//				Flux.just(MockResult.updateCount(1));
 				Flux.fromIterable(segmentsList)
-				    .delayElements(Duration.ofMillis(100));
+				    .delayElements(Duration.ofMillis(10));
 
 		MockStatement statement =
 				MockStatement.builder().result(new MockResult(segmentsFlux)).build();
